@@ -37,3 +37,4 @@ htmlcov/
 
 # Jupyter
 .ipynb_checkpoints/
+.claude/
