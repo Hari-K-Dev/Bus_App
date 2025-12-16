@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir:*)",
+      "Bash(powershell -Command \"Get-ChildItem -Force -Recurse | Select-Object FullName\")",
+      "mcp__playwright__browser_console_messages",
+      "mcp__playwright__browser_navigate",
+      "Bash(uvicorn app.main:app:*)",
+      "Bash(python producer_fixed.py:*)"
+    ]
+  }
+}

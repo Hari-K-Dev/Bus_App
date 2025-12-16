@@ -1,0 +1,145 @@
+# Dublin Bus ETA - Docker Compose
+#
+# Usage:
+#   Start only Postgres (if Kafka not available):
+#     docker-compose up -d postgres
+#
+#   Start full stack:
+#     docker-compose up -d
+#
+#   View logs:
+#     docker-compose logs -f backend
+#
+#   Stop all:
+#     docker-compose down
+
+version: '3.8'
+
+services:
+  # PostgreSQL with PostGIS
+  postgres:
+    image: postgis/postgis:15-3.3
+    container_name: bus_eta_postgres
+    environment:
+      POSTGRES_DB: tfi
+      POSTGRES_USER: tfi_user
+      POSTGRES_PASSWORD: secret
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tfi_user -d tfi"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Backend API
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: bus_eta_backend
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://tfi_user:secret@postgres:5432/tfi
+      MODEL_URL: http://model:8082
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_TOPIC_VEHICLE_POSITIONS: vehicle_positions
+      KAFKA_TOPIC_VEHICLE_DEMAND_CTRL: vehicle_demand_ctrl
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Model service placeholder (for smoke testing)
+  # Returns constant predicted_delay_s for any request
+  model:
+    image: python:3.11-slim
+    container_name: bus_eta_model
+    ports:
+      - "8082:8082"
+    command: >
+      python -c "
+      from http.server import HTTPServer, BaseHTTPRequestHandler
+      import json
+
+      class Handler(BaseHTTPRequestHandler):
+          def do_GET(self):
+              if self.path == '/health':
+                  self.send_response(200)
+                  self.send_header('Content-Type', 'application/json')
+                  self.end_headers()
+                  self.wfile.write(json.dumps({'status': 'ok'}).encode())
+              else:
+                  self.send_response(404)
+                  self.end_headers()
+
+          def do_POST(self):
+              if self.path == '/predict':
+                  content_length = int(self.headers['Content-Length'])
+                  self.rfile.read(content_length)  # Read but ignore
+                  self.send_response(200)
+                  self.send_header('Content-Type', 'application/json')
+                  self.end_headers()
+                  response = {
+                      'items': [{
+                          'predicted_delay_s': 180,
+                          'model_version': 'delay_catboost_smoke_test'
+                      }]
+                  }
+                  self.wfile.write(json.dumps(response).encode())
+              else:
+                  self.send_response(404)
+                  self.end_headers()
+
+          def log_message(self, format, *args):
+              print(f'Model: {args[0]}')
+
+      print('Model stub running on port 8082')
+      HTTPServer(('0.0.0.0', 8082), Handler).serve_forever()
+      "
+    restart: unless-stopped
+
+  # Kafka (optional - comment out if not needed)
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: bus_eta_zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    profiles:
+      - kafka
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: bus_eta_kafka
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    depends_on:
+      - zookeeper
+    profiles:
+      - kafka
+
+  # Frontend (optional - can run locally with npm run dev)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: bus_eta_frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+    profiles:
+      - frontend
+
+volumes:
+  postgres_data:
